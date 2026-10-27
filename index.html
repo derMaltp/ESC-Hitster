@@ -160,6 +160,7 @@
       <button class="btn" id="next" hidden>Nächste Karte</button>
       <button class="btn ghost" id="cancel" hidden>Abbrechen</button>
       <button class="btn ghost" id="retry" hidden>Nochmal versuchen</button>
+      <button class="btn spotify" id="open-spotify" hidden>In Spotify-App öffnen</button>
     </div>
 
     <details>
@@ -327,6 +328,7 @@
     $("#next").hidden = state !== "play";
     $("#cancel").hidden = state !== "scan";
     $("#retry").hidden = state !== "error";
+    $("#open-spotify").hidden = !(state === "error" && currentTrack);
     const c = $("#center");
     if (state === "idle" || state === "error") { c.innerHTML = ICONS.scan; c.setAttribute("aria-label", "Karte scannen"); }
     if (state === "loading") c.innerHTML = ICONS.wait;
@@ -438,7 +440,7 @@
       if (!st) {
         setStage("error");
         $("#status").textContent = "Spotify spielt nicht ab";
-        $("#sub").textContent = "Das gewählte Gerät startet den Song nicht. " + diagnose() + " Lade oben die Geräte neu und tippe auf „Nochmal versuchen“.";
+        $("#sub").textContent = "Das gewählte Gerät startet den Song nicht. " + diagnose() + " Lade oben die Geräte neu und tippe auf „Nochmal versuchen“ – oder öffne den Song direkt in Spotify (Achtung: dort ist der Titel zu sehen).";
         loadDevices().catch(() => {});
         return;
       }
@@ -580,6 +582,18 @@
   };
   $("#next").onclick = () => startScan();
   $("#cancel").onclick = () => { stopScan(); setStage("idle"); resetIdleText(); };
+  // Notausgang: Song direkt in der Spotify-App öffnen (zeigt dort aber Titel/Interpret!)
+  $("#open-spotify").onclick = () => {
+    if (!currentTrack) return;
+    const id = currentTrack;
+    const web = "https://open.spotify.com/track/" + id;
+    if (/android/i.test(navigator.userAgent)) {
+      location.href = "intent://track/" + id + "#Intent;scheme=spotify;package=com.spotify.music;S.browser_fallback_url=" + encodeURIComponent(web) + ";end";
+    } else {
+      location.href = "spotify:track:" + id;
+      setTimeout(() => { if (document.visibilityState === "visible") location.href = web; }, 1500);
+    }
+  };
   $("#retry").onclick = () => currentTrack ? playTrack(currentTrack) : startScan();
 
   $("#opt-random").checked = store.get("random", false);
