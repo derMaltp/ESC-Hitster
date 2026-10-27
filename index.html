@@ -104,6 +104,7 @@
   .links { display: flex; gap: 16px; padding-top: 10px; }
   .links button { background: none; border: 0; color: var(--muted); text-decoration: underline; font: inherit; font-size: 14px; cursor: pointer; padding: 0; }
 
+  #diag { margin-top: 10px; font: 12px/1.45 ui-monospace, Menlo, Consolas, monospace; white-space: pre-wrap; word-break: break-word; color: var(--cyan); background: #0b0b0f; border: 1px solid var(--line); border-radius: 10px; padding: 10px; user-select: text; text-align: left; }
   .toast {
     position: fixed; left: 50%; bottom: calc(env(safe-area-inset-bottom) + 24px); transform: translate(-50%, 20px);
     max-width: min(92vw, 440px); background: #26262f; color: var(--fg); border: 1px solid var(--line);
@@ -134,12 +135,14 @@
     <h2>Mit Spotify verbinden</h2>
     <p>Die Songs laufen über deine Spotify-App (Premium nötig). Titel und Künstler werden hier nie angezeigt.</p>
     <button class="btn spotify" id="login">Mit Spotify verbinden</button>
+    <p style="margin-top:8px">Oder ohne Login: Songs direkt in der Spotify-App öffnen (Ein-Handy-Modus).</p>
+    <button class="btn ghost" id="direct-mode">Ohne Login spielen</button>
     <div class="links"><button id="change-client">Client ID ändern</button></div>
   </section>
 
   <!-- 3) Spiel -->
   <section class="screen" id="screen-game">
-    <div class="devices">
+    <div class="devices" id="devices-row">
       <select id="device" aria-label="Abspielgerät"><option value="">Gerät wird gesucht …</option></select>
       <button class="icon-btn" id="reload-devices" title="Geräte neu laden" aria-label="Geräte neu laden">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
@@ -165,6 +168,12 @@
 
     <details>
       <summary>Einstellungen</summary>
+      <label class="opt">Abspielen
+        <select id="opt-mode">
+          <option value="fern">auf gewähltem Gerät</option>
+          <option value="direkt">direkt in Spotify-App</option>
+        </select>
+      </label>
       <label class="opt">Zufälliger Startpunkt (30–70 s) <input type="checkbox" id="opt-random"></label>
       <label class="opt">Automatisch stoppen nach
         <select id="opt-limit">
@@ -172,6 +181,10 @@
           <option value="45">45 s</option><option value="60">60 s</option>
         </select>
       </label>
+      <div class="opt" style="flex-direction:column;align-items:stretch">
+        <button class="btn ghost" id="diag-btn" style="min-width:0;padding:11px 18px;font-size:15px">Wiedergabe testen</button>
+        <pre id="diag" hidden></pre>
+      </div>
       <div class="links"><button id="logout">Abmelden</button><button id="change-client-2">Client ID ändern</button></div>
     </details>
   </section>
@@ -325,13 +338,14 @@
   function setStage(state) {
     stage.dataset.state = state;
     stage.classList.remove("paused");
-    $("#next").hidden = state !== "play";
+    $("#next").hidden = !(state === "play" || state === "ready");
     $("#cancel").hidden = state !== "scan";
     $("#retry").hidden = state !== "error";
     $("#open-spotify").hidden = !(state === "error" && currentTrack);
     const c = $("#center");
     if (state === "idle" || state === "error") { c.innerHTML = ICONS.scan; c.setAttribute("aria-label", "Karte scannen"); }
     if (state === "loading") c.innerHTML = ICONS.wait;
+    if (state === "ready") { c.innerHTML = ICONS.play; c.setAttribute("aria-label", "In Spotify abspielen"); }
   }
   function setPlaying(on) {
     playing = on;
@@ -365,25 +379,69 @@
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-  // Song starten – bei "Restriction violated" / Gerät nicht aktiv: aktivieren und nochmal
-  async function startOnDevice(dev, id, pos) {
-    const play = () => api("PUT", "/me/player/play?device_id=" + encodeURIComponent(dev), { uris: ["spotify:track:" + id], position_ms: pos });
-    try {
-      await play();
-    } catch (e) {
-      if (!isRestriction(e) && e.status !== 404) throw e;
-      await api("PUT", "/me/player", { device_ids: [dev], play: false }).catch(() => {});
-      await sleep(900);
-      await play();
-    }
+  // ---------- Startmethoden (werden der Reihe nach probiert) ----------
+  let logFn = null;                         // Diagnose: Protokollzeilen sammeln
+  const log = (t) => { if (logFn) logFn(t); };
+
+  async function call(method, path, body) {
+    try { const r = await api(method, path, body); log("   " + method + " " + path.split("?")[0] + " → OK"); return r; }
+    catch (e) { log("   " + method + " " + path.split("?")[0] + " → " + (e.status || "?") + " " + e.message); throw e; }
   }
 
-  // Fragt bis zu ~4 s lang ab, ob auf dem Gerät wirklich etwas läuft
-  // Fragt bis zu ~10 s lang ab, ob auf dem Gerät wirklich etwas läuft.
-  // Handys brauchen manchmal einige Sekunden zum Laden – deshalb geduldig sein
-  // und in der Zwischenzeit KEINE weiteren Befehle schicken.
+  const METHODEN = [
+    { name: "Direktstart", run: async (d, id, pos) =>
+        call("PUT", "/me/player/play?device_id=" + encodeURIComponent(d), { uris: ["spotify:track:" + id], position_ms: pos }) },
+    // Song ist evtl. geladen, aber pausiert (typisch für Android) -> "weiter" drücken
+    { name: "Weiter-Befehl", run: async (d) =>
+        call("PUT", "/me/player/play?device_id=" + encodeURIComponent(d)) },
+    // Gerät erst aktivieren (mit play:true), dann starten
+    { name: "Gerät wecken", run: async (d, id, pos) => {
+        await call("PUT", "/me/player", { device_ids: [d], play: true }).catch(() => {});
+        await sleep(2000);
+        await call("PUT", "/me/player/play?device_id=" + encodeURIComponent(d), { uris: ["spotify:track:" + id], position_ms: pos });
+      } },
+    // Statt Einzelsong das Album als Kontext starten und zum Song springen
+    { name: "Album-Kontext", run: async (d, id, pos) => {
+        const t = await call("GET", "/tracks/" + id);
+        const album = t && t.album && t.album.uri;
+        if (!album) throw Object.assign(new Error("kein Album gefunden"), { status: 0 });
+        await call("PUT", "/me/player/play?device_id=" + encodeURIComponent(d), { context_uri: album, offset: { uri: "spotify:track:" + id }, position_ms: pos });
+      } },
+    // Ohne Geräte-ID: Spotify nimmt das aktive Gerät
+    { name: "Ohne Geräte-ID", run: async (d, id, pos) =>
+        call("PUT", "/me/player/play", { uris: ["spotify:track:" + id], position_ms: pos }) },
+    { name: "Warteschlange", run: async (d, id) => {
+        const q = encodeURIComponent(d);
+        await call("POST", "/me/player/queue?device_id=" + q + "&uri=" + encodeURIComponent("spotify:track:" + id));
+        await sleep(800);
+        await call("POST", "/me/player/next?device_id=" + q);
+        await sleep(800);
+        await call("PUT", "/me/player/play?device_id=" + q).catch(() => {});
+      } },
+  ];
+
+  // zuletzt erfolgreiche Methode zuerst
+  function reihenfolge() {
+    const pref = store.get("methode", "");
+    return [...METHODEN].sort((x, y) => (y.name === pref) - (x.name === pref));
+  }
+
+  // Eine Methode ausführen und prüfen, ob wirklich etwas spielt. Gibt den Spotify-Zustand oder null zurück.
+  async function versuche(m, dev, devName, id, pos, sekunden = 6) {
+    log("▶ " + m.name);
+    try { await m.run(dev, id, pos); }
+    catch (e) { if (!e.status && e.status !== 0) throw e; log("   → Befehl abgelehnt, nächste Methode"); return null; }
+    const st = await verifyPlayback(dev, devName, sekunden, id);
+    log(st ? "   ✔ spielt" : "   ✘ spielt nicht – " + stateInfo(lastState));
+    return st;
+  }
+
+  async function startOnDevice(dev, id, pos) { await METHODEN[0].run(dev, id, pos); }
+
+  // Fragt regelmäßig bei Spotify nach, ob auf dem Gerät wirklich etwas läuft.
+  // Handys brauchen manchmal einige Sekunden zum Laden.
   let lastState = null;
-  async function verifyPlayback(dev, devName, sekunden = 10) {
+  async function verifyPlayback(dev, devName, sekunden = 6) {
     lastState = null;
     for (let i = 0; i < sekunden; i++) {
       await sleep(1000);
@@ -395,52 +453,92 @@
     return null;
   }
 
-  function diagnose() {
-    const st = lastState;
-    if (!st || !st.device) return "Spotify meldet: keine aktive Wiedergabe.";
-    const item = st.item || st.track;
-    const geladen = item && item.id === currentTrack ? ", Song geladen" : item ? ", anderer Song geladen" : ", kein Song geladen";
-    return "Spotify meldet: " + (st.device.name || "unbekanntes Gerät") + ", " + (st.is_playing ? "spielt" : "pausiert") + geladen + ".";
+  // Kurzbeschreibung des Spotify-Zustands (ohne Titel zu verraten)
+  function stateInfo(st) {
+    if (!st || !st.device) return "keine aktive Wiedergabe gemeldet";
+    const d = st.device, item = st.item || st.track;
+    const dis = st.actions && st.actions.disallows ? Object.keys(st.actions.disallows).filter((k) => st.actions.disallows[k]).join(",") : "";
+    return [d.name, d.type, st.is_playing ? "spielt" : "pausiert", item ? "Song geladen" : "kein Song geladen",
+            d.is_restricted ? "Gerät eingeschränkt" : "", dis ? "gesperrt: " + dis : ""].filter(Boolean).join(", ");
+  }
+  function diagnose() { return "Spotify meldet: " + stateInfo(lastState) + "."; }
+
+  // Diagnose-Test (Einstellungen): probiert alle Methoden mit einem Testsong und protokolliert alles
+  async function diagnoseTest() {
+    const out = $("#diag");
+    out.hidden = false; out.textContent = "";
+    logFn = (t) => { out.textContent += t + "\n"; };
+    try {
+      const dev = await deviceId();
+      const devName = ($("#device").selectedOptions[0]?.textContent || "").split(" · ")[0];
+      const dl = await api("GET", "/me/player/devices");
+      log("Geräte: " + ((dl && dl.devices) || []).map((d) => d.name + " [" + d.type + (d.is_active ? ", aktiv" : "") + (d.is_restricted ? ", eingeschränkt" : "") + "]").join("; "));
+      log("Gewählt: " + devName);
+      log("Vorher: " + stateInfo(await api("GET", "/me/player").catch(() => null)));
+      let gefunden = null;
+      for (const m of reihenfolge()) {
+        const st = await versuche(m, dev, devName, "3Dy4REq8O09IlgiwuHQ3sk", 0, 7);
+        if (st) { gefunden = m; break; }
+      }
+      if (gefunden) {
+        store.set("methode", gefunden.name);
+        log("→ Funktioniert mit „" + gefunden.name + "“. Wird ab jetzt zuerst benutzt.");
+        await api("PUT", "/me/player/pause?device_id=" + encodeURIComponent(dev)).catch(() => {});
+      } else {
+        log("→ Keine Methode hat funktioniert. Bitte diesen Text als Screenshot schicken.");
+      }
+    } catch (e) { log("Fehler: " + friendly(e)); }
+    finally { logFn = null; }
+  }
+
+  const direktModus = () => store.get("modus", "fern") === "direkt";
+
+  function openInSpotify(id) {
+    const web = "https://open.spotify.com/track/" + id;
+    if (/android/i.test(navigator.userAgent)) {
+      location.href = "intent://track/" + id + "#Intent;scheme=spotify;package=com.spotify.music;S.browser_fallback_url=" + encodeURIComponent(web) + ";end";
+    } else {
+      location.href = "spotify:track:" + id;
+      setTimeout(() => { if (document.visibilityState === "visible") location.href = web; }, 1500);
+    }
+  }
+
+  // Ein-Handy-Modus: Browser erlaubt das Öffnen von Spotify nur nach einem Tippen -> großer Play-Button
+  function readyDirect(id) {
+    currentTrack = id;
+    setStage("ready");
+    $("#status").textContent = "Karte erkannt!";
+    $("#sub").textContent = "Tippe auf ▶ – der Song öffnet sich in Spotify. Handy sofort umdrehen, dort ist der Titel zu sehen!";
+  }
+
+  function applyMode() {
+    $("#devices-row").style.display = direktModus() ? "none" : "";
+    $("#opt-mode").value = direktModus() ? "direkt" : "fern";
   }
 
   async function playTrack(id) {
+    if (direktModus()) return readyDirect(id);
     currentTrack = id;
     setStage("loading");
     $("#status").textContent = "Wird gestartet …";
     $("#sub").textContent = "";
     try {
       const dev = await deviceId();
-      const pos = store.get("random", false) ? (30 + Math.floor(Math.random() * 40)) * 1000 : 0;
-      await startOnDevice(dev, id, pos);
-
-      // Nachprüfen, ob Spotify wirklich abspielt (manche Geräte nehmen Befehle an, ohne zu spielen)
-      $("#status").textContent = "Prüfe Wiedergabe …";
       const devName = ($("#device").selectedOptions[0]?.textContent || "").split(" · ")[0];
-      const devQ = encodeURIComponent(dev);
-      let st = await verifyPlayback(dev, devName, 8);
+      const pos = store.get("random", false) ? (30 + Math.floor(Math.random() * 40)) * 1000 : 0;
 
-      // Methode 2: Song ist geladen, aber pausiert (typisch für Android/Samsung) -> einfach "weiter" drücken
-      if (!st) {
-        $("#status").textContent = "Zweiter Versuch …";
-        await api("PUT", "/me/player/play?device_id=" + devQ).catch(() => {});
-        st = await verifyPlayback(dev, devName, 5);
-      }
-      // Methode 3: über die Warteschlange starten (in Warteschlange + nächster Titel)
-      if (!st) {
-        $("#status").textContent = "Dritter Versuch …";
-        try {
-          await api("POST", "/me/player/queue?device_id=" + devQ + "&uri=" + encodeURIComponent("spotify:track:" + id));
-          await sleep(800);
-          await api("POST", "/me/player/next?device_id=" + devQ);
-          await sleep(800);
-          await api("PUT", "/me/player/play?device_id=" + devQ).catch(() => {});
-          st = await verifyPlayback(dev, devName, 8);
-        } catch (e) { if (!isRestriction(e)) console.warn(e); }
+      // Methoden der Reihe nach probieren (zuletzt erfolgreiche zuerst)
+      let st = null, n = 0;
+      for (const m of reihenfolge()) {
+        n++;
+        $("#status").textContent = n === 1 ? "Wird gestartet …" : "Versuch " + n + " von " + METHODEN.length + " …";
+        st = await versuche(m, dev, devName, id, pos, 6);
+        if (st) { store.set("methode", m.name); break; }
       }
       if (!st) {
         setStage("error");
         $("#status").textContent = "Spotify spielt nicht ab";
-        $("#sub").textContent = "Das gewählte Gerät startet den Song nicht. " + diagnose() + " Lade oben die Geräte neu und tippe auf „Nochmal versuchen“ – oder öffne den Song direkt in Spotify (Achtung: dort ist der Titel zu sehen).";
+        $("#sub").textContent = "Das gewählte Gerät startet den Song nicht. " + diagnose() + " Unter Einstellungen → „Wiedergabe testen“ findest du die Ursache – oder öffne den Song direkt in Spotify (Achtung: dort ist der Titel zu sehen).";
         loadDevices().catch(() => {});
         return;
       }
@@ -489,7 +587,7 @@
 
   async function startScan() {
     clearTimers();
-    if (playing) { api("PUT", "/me/player/pause?device_id=" + encodeURIComponent($("#device").value)).catch(() => {}); playing = false; }
+    if (playing && !direktModus()) { api("PUT", "/me/player/pause?device_id=" + encodeURIComponent($("#device").value)).catch(() => {}); playing = false; }
     setStage("scan");
     $("#status").textContent = "Scanne …";
     $("#sub").textContent = "QR-Code der Kartenrückseite in den Rahmen halten.";
@@ -579,23 +677,32 @@
     const s = stage.dataset.state;
     if (s === "idle" || s === "error") startScan();
     else if (s === "play") togglePlay();
+    else if (s === "ready" && currentTrack) {
+      openInSpotify(currentTrack);
+      $("#status").textContent = "In Spotify geöffnet";
+      $("#sub").textContent = "Danach zurück hierher und die nächste Karte scannen.";
+    }
   };
   $("#next").onclick = () => startScan();
   $("#cancel").onclick = () => { stopScan(); setStage("idle"); resetIdleText(); };
   // Notausgang: Song direkt in der Spotify-App öffnen (zeigt dort aber Titel/Interpret!)
-  $("#open-spotify").onclick = () => {
-    if (!currentTrack) return;
-    const id = currentTrack;
-    const web = "https://open.spotify.com/track/" + id;
-    if (/android/i.test(navigator.userAgent)) {
-      location.href = "intent://track/" + id + "#Intent;scheme=spotify;package=com.spotify.music;S.browser_fallback_url=" + encodeURIComponent(web) + ";end";
-    } else {
-      location.href = "spotify:track:" + id;
-      setTimeout(() => { if (document.visibilityState === "visible") location.href = web; }, 1500);
-    }
-  };
+  $("#open-spotify").onclick = () => { if (currentTrack) openInSpotify(currentTrack); };
   $("#retry").onclick = () => currentTrack ? playTrack(currentTrack) : startScan();
 
+  $("#diag-btn").onclick = async () => {
+    const b = $("#diag-btn"); b.disabled = true; b.textContent = "Test läuft …";
+    await diagnoseTest();
+    b.disabled = false; b.textContent = "Wiedergabe testen";
+  };
+  $("#opt-mode").onchange = async (e) => {
+    store.set("modus", e.target.value);
+    applyMode();
+    if (!direktModus()) {
+      if (!(await accessToken())) return showScreen(clientId() ? "login" : "setup");
+      loadDevices().catch((err) => toast(friendly(err)));
+    }
+  };
+  $("#direct-mode").onclick = () => { store.set("modus", "direkt"); applyMode(); showScreen("game"); keepAwake(); };
   $("#opt-random").checked = store.get("random", false);
   $("#opt-random").onchange = (e) => store.set("random", e.target.checked);
   $("#opt-limit").value = String(store.get("limit", 0));
@@ -604,6 +711,8 @@
   // ---------- Start ----------
   (async () => {
     setStage("idle");
+    applyMode();
+    if (direktModus() && !location.search.includes("code=")) { showScreen("game"); keepAwake(); return; }
     if (!clientId()) return showScreen("setup");
     try { await handleRedirect(); } catch (e) { toast(e.message); }
     if (!(await accessToken())) return showScreen("login");
