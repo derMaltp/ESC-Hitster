@@ -377,13 +377,26 @@
   }
 
   // Fragt bis zu ~4 s lang ab, ob auf dem Gerät wirklich etwas läuft
-  async function verifyPlayback(dev) {
-    for (let i = 0; i < 4; i++) {
+  // Fragt bis zu ~10 s lang ab, ob auf dem Gerät wirklich etwas läuft.
+  // Handys brauchen manchmal einige Sekunden zum Laden – deshalb geduldig sein
+  // und in der Zwischenzeit KEINE weiteren Befehle schicken.
+  let lastState = null;
+  async function verifyPlayback(dev, devName, sekunden = 10) {
+    lastState = null;
+    for (let i = 0; i < sekunden; i++) {
       await sleep(1000);
       const st = await api("GET", "/me/player").catch(() => null);
-      if (st && st.is_playing && st.device && st.device.id === dev) return st;
+      lastState = st;
+      const gleichesGeraet = st && st.device && (st.device.id === dev || (devName && st.device.name === devName));
+      if (st && st.is_playing && gleichesGeraet) return st;
     }
     return null;
+  }
+
+  function diagnose() {
+    const st = lastState;
+    if (!st || !st.device) return "Spotify meldet: keine aktive Wiedergabe.";
+    return "Spotify meldet: " + (st.device.name || "unbekanntes Gerät") + ", " + (st.is_playing ? "spielt" : "pausiert") + ".";
   }
 
   async function playTrack(id) {
@@ -398,17 +411,18 @@
 
       // Nachprüfen, ob Spotify wirklich abspielt (manche Geräte nehmen Befehle an, ohne zu spielen)
       $("#status").textContent = "Prüfe Wiedergabe …";
-      let st = await verifyPlayback(dev);
+      const devName = ($("#device").selectedOptions[0]?.textContent || "").split(" · ")[0];
+      let st = await verifyPlayback(dev, devName);
       if (!st) {
-        await api("PUT", "/me/player", { device_ids: [dev], play: false }).catch(() => {});
-        await sleep(1000);
+        // Ein zweiter Versuch – nur der Startbefehl, ohne Gerät umzuschalten (das würde pausieren)
+        $("#status").textContent = "Zweiter Versuch …";
         await api("PUT", "/me/player/play?device_id=" + encodeURIComponent(dev), { uris: ["spotify:track:" + id], position_ms: pos });
-        st = await verifyPlayback(dev);
+        st = await verifyPlayback(dev, devName);
       }
       if (!st) {
         setStage("error");
         $("#status").textContent = "Spotify spielt nicht ab";
-        $("#sub").textContent = "Das gewählte Gerät reagiert nicht. Öffne Spotify auf dem Gerät, spiel kurz einen Song an, lade oben die Geräte neu und tippe auf „Nochmal versuchen“.";
+        $("#sub").textContent = "Das gewählte Gerät startet den Song nicht. " + diagnose() + " Lade oben die Geräte neu und tippe auf „Nochmal versuchen“.";
         loadDevices().catch(() => {});
         return;
       }
