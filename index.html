@@ -1,0 +1,506 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0b0b0f">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<title>ESC Hitster Player</title>
+<!-- QR-Erkennung für Browser ohne eingebauten BarcodeDetector (z. B. iPhone) -->
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+<style>
+  :root {
+    --bg: #0b0b0f; --panel: #17171f; --line: #2a2a36;
+    --fg: #ffffff; --muted: #9a9aa8;
+    --pink: #FF2E88; --yellow: #FFD60A; --cyan: #00C2FF;
+    --purple: #8E44FF; --orange: #FF8A00; --green: #2BD96B;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg); color: var(--fg);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    min-height: 100dvh; display: flex; flex-direction: column; align-items: center;
+    padding: env(safe-area-inset-top) 16px calc(env(safe-area-inset-bottom) + 16px);
+    -webkit-tap-highlight-color: transparent; user-select: none;
+  }
+  header { width: 100%; max-width: 480px; display: flex; align-items: center; justify-content: space-between; padding: 16px 0 8px; }
+  .logo { font-weight: 900; font-size: 22px; letter-spacing: .04em; }
+  .logo span { background: linear-gradient(90deg, var(--pink), var(--yellow), var(--cyan)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  main { flex: 1; width: 100%; max-width: 480px; display: flex; flex-direction: column; }
+  .screen { display: none; flex: 1; flex-direction: column; align-items: center; justify-content: center; gap: 18px; text-align: center; }
+  .screen.active { display: flex; }
+
+  h2 { font-size: 22px; }
+  p { color: var(--muted); line-height: 1.45; }
+  p b { color: var(--fg); }
+  input, select {
+    width: 100%; font: inherit; color: var(--fg); background: var(--panel);
+    border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px;
+  }
+  code { display: block; width: 100%; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px; font-size: 13px; word-break: break-all; color: var(--cyan); user-select: all; }
+  .btn {
+    font: inherit; font-weight: 700; font-size: 17px; border: 0; border-radius: 999px;
+    padding: 15px 28px; cursor: pointer; color: #111; background: var(--yellow);
+    min-width: 200px; transition: transform .1s;
+  }
+  .btn:active { transform: scale(.96); }
+  .btn.ghost { background: transparent; color: var(--fg); border: 1px solid var(--line); }
+  .btn.spotify { background: #1ED760; }
+  .warn { color: var(--orange); font-size: 14px; }
+
+  /* Geräteauswahl */
+  .devices { width: 100%; display: flex; gap: 8px; align-items: center; }
+  .devices select { flex: 1; padding: 10px 12px; font-size: 15px; }
+  .icon-btn { flex: none; width: 44px; height: 44px; border-radius: 12px; border: 1px solid var(--line); background: var(--panel); color: var(--fg); display: grid; place-items: center; cursor: pointer; }
+  .icon-btn svg { width: 20px; height: 20px; }
+
+  /* Bühne mit Neon-Ringen */
+  .stage { position: relative; width: min(80vw, 340px); aspect-ratio: 1; display: grid; place-items: center; margin: 8px 0; }
+  .ring {
+    position: absolute; border-radius: 50%; --w: 7px;
+    -webkit-mask: radial-gradient(farthest-side, #0000 calc(100% - var(--w)), #000 calc(100% - var(--w) + 1px));
+            mask: radial-gradient(farthest-side, #0000 calc(100% - var(--w)), #000 calc(100% - var(--w) + 1px));
+    animation: spin var(--d) linear infinite; transition: opacity .3s;
+  }
+  .r1 { inset: 0;   --d: 18s; background: conic-gradient(var(--pink) 0 22%, #0000 0 34%, var(--yellow) 0 52%, #0000 0 63%, var(--cyan) 0 84%, #0000 0); }
+  .r2 { inset: 7%;  --d: 13s; animation-direction: reverse; background: conic-gradient(var(--purple) 0 30%, #0000 0 41%, var(--green) 0 66%, #0000 0 78%, var(--orange) 0 92%, #0000 0); }
+  .r3 { inset: 14%; --d: 21s; background: conic-gradient(var(--cyan) 0 18%, #0000 0 30%, var(--pink) 0 58%, #0000 0 70%, var(--yellow) 0 90%, #0000 0); }
+  .r4 { inset: 21%; --d: 10s; animation-direction: reverse; background: conic-gradient(var(--orange) 0 26%, #0000 0 40%, var(--purple) 0 70%, #0000 0 80%, var(--green) 0 95%, #0000 0); }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .stage[data-state="play"] .ring { animation-duration: calc(var(--d) / 3); }
+  .stage.paused .ring { animation-play-state: paused; opacity: .45; }
+  .stage[data-state="scan"] .r3, .stage[data-state="scan"] .r4 { opacity: 0; }
+
+  .center {
+    position: relative; z-index: 2; width: 44%; aspect-ratio: 1; border: 0; border-radius: 22%;
+    background: #fff; color: #111; display: grid; place-items: center; cursor: pointer;
+    box-shadow: 0 0 40px rgba(255,46,136,.25); transition: transform .1s;
+  }
+  .center:active { transform: scale(.95); }
+  .center svg { width: 46%; height: 46%; }
+  .stage[data-state="play"]:not(.paused) .center { animation: pulse 1.1s ease-in-out infinite; }
+  @keyframes pulse { 50% { transform: scale(1.05); box-shadow: 0 0 60px rgba(0,194,255,.45); } }
+  .stage[data-state="scan"] .center { display: none; }
+
+  .cam { position: absolute; inset: 15%; border-radius: 26px; overflow: hidden; display: none; z-index: 1; background: #000; }
+  .stage[data-state="scan"] .cam { display: block; }
+  .cam video { width: 100%; height: 100%; object-fit: cover; }
+  .cam::after { content: ""; position: absolute; inset: 14%; border: 3px solid rgba(255,255,255,.85); border-radius: 14px; box-shadow: 0 0 0 999px rgba(0,0,0,.35); }
+
+  .status { font-size: 18px; font-weight: 700; color: var(--fg); min-height: 1.4em; }
+  .sub { font-size: 14px; min-height: 1.3em; }
+  .progress { width: 60%; height: 4px; border-radius: 4px; background: var(--line); overflow: hidden; visibility: hidden; }
+  .progress div { height: 100%; width: 0; background: linear-gradient(90deg, var(--pink), var(--yellow)); }
+  .actions { display: flex; flex-direction: column; gap: 10px; align-items: center; min-height: 110px; }
+
+  details { width: 100%; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; text-align: left; }
+  summary { cursor: pointer; font-weight: 700; color: var(--muted); }
+  .opt { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+  .opt:last-child { border: 0; }
+  .opt select { width: auto; padding: 6px 10px; }
+  .opt input[type=checkbox] { width: 22px; height: 22px; accent-color: var(--pink); }
+  .links { display: flex; gap: 16px; padding-top: 10px; }
+  .links button { background: none; border: 0; color: var(--muted); text-decoration: underline; font: inherit; font-size: 14px; cursor: pointer; padding: 0; }
+
+  .toast {
+    position: fixed; left: 50%; bottom: calc(env(safe-area-inset-bottom) + 24px); transform: translate(-50%, 20px);
+    max-width: min(92vw, 440px); background: #26262f; color: var(--fg); border: 1px solid var(--line);
+    padding: 12px 16px; border-radius: 14px; font-size: 15px; opacity: 0; pointer-events: none; transition: .25s; z-index: 10; text-align: center;
+  }
+  .toast.show { opacity: 1; transform: translate(-50%, 0); }
+</style>
+</head>
+<body>
+<header>
+  <div class="logo"><span>ESC</span> HITSTER</div>
+</header>
+
+<main>
+  <!-- 1) Einrichtung: Client ID -->
+  <section class="screen" id="screen-setup">
+    <h2>Einrichtung</h2>
+    <p>Trage diese Adresse in deiner Spotify-App im Developer Dashboard unter <b>Redirect URIs</b> ein:</p>
+    <code id="redirect-uri"></code>
+    <p>Danach hier die <b>Client ID</b> der App einfügen:</p>
+    <input id="client-id" placeholder="Client ID" autocomplete="off" autocapitalize="off" spellcheck="false">
+    <button class="btn" id="save-client">Speichern</button>
+    <p class="warn" id="https-warn" hidden>Achtung: Kamera und Spotify-Login funktionieren nur über https:// (oder http://127.0.0.1).</p>
+  </section>
+
+  <!-- 2) Login -->
+  <section class="screen" id="screen-login">
+    <h2>Mit Spotify verbinden</h2>
+    <p>Die Songs laufen über deine Spotify-App (Premium nötig). Titel und Künstler werden hier nie angezeigt.</p>
+    <button class="btn spotify" id="login">Mit Spotify verbinden</button>
+    <div class="links"><button id="change-client">Client ID ändern</button></div>
+  </section>
+
+  <!-- 3) Spiel -->
+  <section class="screen" id="screen-game">
+    <div class="devices">
+      <select id="device" aria-label="Abspielgerät"><option value="">Gerät wird gesucht …</option></select>
+      <button class="icon-btn" id="reload-devices" title="Geräte neu laden" aria-label="Geräte neu laden">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
+      </button>
+    </div>
+
+    <div class="stage" id="stage" data-state="idle">
+      <div class="ring r1"></div><div class="ring r2"></div><div class="ring r3"></div><div class="ring r4"></div>
+      <button class="center" id="center" aria-label="Karte scannen"></button>
+      <div class="cam"><video id="video" playsinline muted></video></div>
+    </div>
+
+    <div class="status" id="status">Karte scannen</div>
+    <p class="sub" id="sub">Tippe auf das Feld und halte die Rückseite der Karte vor die Kamera.</p>
+    <div class="progress" id="progress"><div></div></div>
+
+    <div class="actions">
+      <button class="btn" id="next" hidden>Nächste Karte</button>
+      <button class="btn ghost" id="cancel" hidden>Abbrechen</button>
+      <button class="btn ghost" id="retry" hidden>Nochmal versuchen</button>
+    </div>
+
+    <details>
+      <summary>Einstellungen</summary>
+      <label class="opt">Zufälliger Startpunkt (30–70 s) <input type="checkbox" id="opt-random"></label>
+      <label class="opt">Automatisch stoppen nach
+        <select id="opt-limit">
+          <option value="0">nie</option><option value="15">15 s</option><option value="30">30 s</option>
+          <option value="45">45 s</option><option value="60">60 s</option>
+        </select>
+      </label>
+      <div class="links"><button id="logout">Abmelden</button><button id="change-client-2">Client ID ändern</button></div>
+    </details>
+  </section>
+</main>
+
+<div class="toast" id="toast"></div>
+<canvas id="canvas" hidden></canvas>
+
+<script>
+(() => {
+  "use strict";
+  const $ = (s) => document.querySelector(s);
+  const REDIRECT_URI = location.origin + location.pathname;
+  const SCOPES = "user-modify-playback-state user-read-playback-state";
+
+  // ---------- kleine Helfer ----------
+  const store = {
+    get(k, d = null) { try { const v = localStorage.getItem("eschit_" + k); return v === null ? d : JSON.parse(v); } catch { return d; } },
+    set(k, v) { try { localStorage.setItem("eschit_" + k, JSON.stringify(v)); } catch {} },
+    del(k) { try { localStorage.removeItem("eschit_" + k); } catch {} },
+  };
+  let toastTimer;
+  function toast(msg, ms = 4000) {
+    const t = $("#toast"); t.textContent = msg; t.classList.add("show");
+    clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove("show"), ms);
+  }
+  function showScreen(name) {
+    document.querySelectorAll(".screen").forEach((s) => s.classList.toggle("active", s.id === "screen-" + name));
+  }
+  const ICONS = {
+    scan: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/><rect x="8" y="8" width="3" height="3"/><rect x="13" y="8" width="3" height="3"/><rect x="8" y="13" width="3" height="3"/><path d="M13 13h3v3"/></svg>',
+    play: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.5v15a1 1 0 0 0 1.5.86l12-7.5a1 1 0 0 0 0-1.72l-12-7.5A1 1 0 0 0 7 4.5z"/></svg>',
+    pause: '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4.5" height="16" rx="1.2"/><rect x="13.5" y="4" width="4.5" height="16" rx="1.2"/></svg>',
+    wait: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 3a9 9 0 1 0 9 9"><animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur=".9s" repeatCount="indefinite"/></path></svg>',
+  };
+
+  // ---------- Spotify-Login (PKCE, ohne Server) ----------
+  const clientId = () => store.get("client_id", "");
+  const b64url = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+
+  async function login() {
+    const verifier = b64url(crypto.getRandomValues(new Uint8Array(64)));
+    const challenge = b64url(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)));
+    store.set("verifier", verifier);
+    const p = new URLSearchParams({
+      client_id: clientId(), response_type: "code", redirect_uri: REDIRECT_URI,
+      code_challenge_method: "S256", code_challenge: challenge, scope: SCOPES,
+    });
+    location.href = "https://accounts.spotify.com/authorize?" + p;
+  }
+
+  async function tokenRequest(params) {
+    const r = await fetch("https://accounts.spotify.com/api/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ client_id: clientId(), ...params }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error_description || j.error || "Login fehlgeschlagen");
+    const old = store.get("token", {});
+    store.set("token", { access: j.access_token, refresh: j.refresh_token || old.refresh, exp: Date.now() + (j.expires_in - 60) * 1000 });
+  }
+
+  async function handleRedirect() {
+    const q = new URLSearchParams(location.search);
+    if (!q.has("code") && !q.has("error")) return;
+    history.replaceState(null, "", REDIRECT_URI);
+    if (q.get("error")) throw new Error("Spotify-Login abgebrochen (" + q.get("error") + ")");
+    await tokenRequest({ grant_type: "authorization_code", code: q.get("code"), redirect_uri: REDIRECT_URI, code_verifier: store.get("verifier") });
+    store.del("verifier");
+  }
+
+  async function accessToken() {
+    const t = store.get("token");
+    if (!t) return null;
+    if (Date.now() < t.exp) return t.access;
+    try { await tokenRequest({ grant_type: "refresh_token", refresh_token: t.refresh }); return store.get("token").access; }
+    catch { store.del("token"); return null; }
+  }
+
+  async function api(method, path, body) {
+    const tok = await accessToken();
+    if (!tok) { showScreen("login"); throw new Error("Bitte neu mit Spotify verbinden."); }
+    const r = await fetch("https://api.spotify.com/v1" + path, {
+      method,
+      headers: { Authorization: "Bearer " + tok, ...(body ? { "Content-Type": "application/json" } : {}) },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    if (r.status === 401) { store.del("token"); showScreen("login"); throw new Error("Sitzung abgelaufen – bitte neu verbinden."); }
+    if (!r.ok) {
+      const j = await r.json().catch(() => ({}));
+      const e = new Error((j.error && j.error.message) || "Fehler " + r.status);
+      e.status = r.status; e.reason = j.error && j.error.reason;
+      throw e;
+    }
+    const txt = await r.text();
+    return txt ? JSON.parse(txt) : null;
+  }
+
+  function friendly(e) {
+    if (e.reason === "PREMIUM_REQUIRED") return "Zum Abspielen braucht das Spotify-Konto Premium.";
+    if (e.status === 404) return "Gerät nicht erreichbar. Öffne Spotify auf dem Gerät, spiel kurz etwas an und lade die Geräte neu.";
+    if (e.status === 403) return "Spotify verweigert den Zugriff (" + e.message + "). Ist dein Konto im Dashboard unter „User Management“ eingetragen?";
+    return e.message;
+  }
+
+  // ---------- Geräte ----------
+  async function loadDevices() {
+    const sel = $("#device");
+    const data = await api("GET", "/me/player/devices");
+    const list = ((data && data.devices) || []).filter((d) => d.id && !d.is_restricted);
+    sel.innerHTML = "";
+    if (!list.length) {
+      sel.innerHTML = '<option value="">Kein Gerät – Spotify-App öffnen</option>';
+      return list;
+    }
+    const typ = { Smartphone: "Handy", Computer: "PC", Speaker: "Lautsprecher", TV: "TV", Tablet: "Tablet" };
+    for (const d of list) {
+      const o = document.createElement("option");
+      o.value = d.id;
+      o.textContent = d.name + " · " + (typ[d.type] || d.type);
+      sel.append(o);
+    }
+    const saved = store.get("device");
+    sel.value = list.some((d) => d.id === saved) ? saved : (list.find((d) => d.is_active) || list[0]).id;
+    store.set("device", sel.value);
+    return list;
+  }
+
+  async function deviceId() {
+    if (!$("#device").value) await loadDevices();
+    const id = $("#device").value;
+    if (!id) { const e = new Error(""); e.status = 404; throw e; }
+    return id;
+  }
+
+  // ---------- Wiedergabe ----------
+  const stage = $("#stage");
+  let currentTrack = null, playing = false, stopTimer = null, progressTimer = null;
+
+  function setStage(state) {
+    stage.dataset.state = state;
+    stage.classList.remove("paused");
+    $("#next").hidden = state !== "play";
+    $("#cancel").hidden = state !== "scan";
+    $("#retry").hidden = state !== "error";
+    const c = $("#center");
+    if (state === "idle" || state === "error") { c.innerHTML = ICONS.scan; c.setAttribute("aria-label", "Karte scannen"); }
+    if (state === "loading") c.innerHTML = ICONS.wait;
+  }
+  function setPlaying(on) {
+    playing = on;
+    stage.classList.toggle("paused", !on);
+    $("#center").innerHTML = on ? ICONS.pause : ICONS.play;
+    $("#center").setAttribute("aria-label", on ? "Pause" : "Abspielen");
+    $("#status").textContent = on ? "Läuft …" : "Pausiert";
+    $("#sub").textContent = on ? "Wann war das? Lege die Karte an die richtige Stelle!" : "Tippe zum Weiterhören.";
+  }
+
+  function clearTimers() {
+    clearTimeout(stopTimer); clearInterval(progressTimer);
+    $("#progress").style.visibility = "hidden";
+  }
+  function scheduleStop() {
+    clearTimers();
+    const limit = Number(store.get("limit", 0));
+    if (!limit) return;
+    const bar = $("#progress"), fill = bar.firstElementChild, start = Date.now();
+    bar.style.visibility = "visible"; fill.style.width = "0";
+    progressTimer = setInterval(() => { fill.style.width = Math.min(100, (Date.now() - start) / (limit * 10)) + "%"; }, 200);
+    stopTimer = setTimeout(async () => {
+      clearTimers();
+      try { await api("PUT", "/me/player/pause?device_id=" + encodeURIComponent(await deviceId())); } catch {}
+      setPlaying(false);
+      $("#status").textContent = "Zeit um!";
+    }, limit * 1000);
+  }
+
+  async function playTrack(id) {
+    currentTrack = id;
+    setStage("loading");
+    $("#status").textContent = "Wird gestartet …";
+    $("#sub").textContent = "";
+    try {
+      const dev = await deviceId();
+      const pos = store.get("random", false) ? (30 + Math.floor(Math.random() * 40)) * 1000 : 0;
+      await api("PUT", "/me/player/play?device_id=" + encodeURIComponent(dev), { uris: ["spotify:track:" + id], position_ms: pos });
+      setStage("play");
+      setPlaying(true);
+      scheduleStop();
+    } catch (e) {
+      setStage("error");
+      $("#status").textContent = "Konnte nicht abspielen";
+      $("#sub").textContent = friendly(e);
+      if (e.status === 404) loadDevices().catch(() => {});
+    }
+  }
+
+  let busy = false;
+  async function togglePlay() {
+    if (busy) return;  // Doppeltipps ignorieren
+    busy = true;
+    setTimeout(() => (busy = false), 600);
+    try {
+      const dev = encodeURIComponent(await deviceId());
+      if (playing) { await api("PUT", "/me/player/pause?device_id=" + dev); clearTimers(); setPlaying(false); }
+      else { await api("PUT", "/me/player/play?device_id=" + dev); setPlaying(true); scheduleStop(); }
+    } catch (e) { toast(friendly(e)); }
+  }
+
+  // ---------- QR-Scanner ----------
+  const video = $("#video"), canvas = $("#canvas");
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  let stream = null, scanning = false, detector = null, lastBad = "";
+
+  const trackIdFrom = (text) => { const m = /track[/:]([A-Za-z0-9]{22})/.exec(text || ""); return m ? m[1] : null; };
+
+  async function startScan() {
+    clearTimers();
+    if (playing) { api("PUT", "/me/player/pause?device_id=" + encodeURIComponent($("#device").value)).catch(() => {}); playing = false; }
+    setStage("scan");
+    $("#status").textContent = "Scanne …";
+    $("#sub").textContent = "QR-Code der Kartenrückseite in den Rahmen halten.";
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" } }, audio: false });
+    } catch (e) {
+      setStage("idle");
+      $("#status").textContent = "Keine Kamera";
+      $("#sub").textContent = "Bitte Kamerazugriff erlauben (und die Seite über https öffnen).";
+      return;
+    }
+    video.srcObject = stream;
+    await video.play().catch(() => {});
+    if (!detector && "BarcodeDetector" in window) {
+      try { if ((await BarcodeDetector.getSupportedFormats()).includes("qr_code")) detector = new BarcodeDetector({ formats: ["qr_code"] }); } catch {}
+    }
+    scanning = true;
+    requestAnimationFrame(tick);
+  }
+
+  function stopScan() {
+    scanning = false;
+    if (stream) stream.getTracks().forEach((t) => t.stop());
+    stream = null; video.srcObject = null;
+  }
+
+  async function tick() {
+    if (!scanning) return;
+    if (video.readyState >= 2 && video.videoWidth) {
+      let text = null;
+      if (detector) {
+        try { const r = await detector.detect(video); if (r.length) text = r[0].rawValue; } catch {}
+      } else if (window.jsQR) {
+        const scale = Math.min(1, 640 / Math.max(video.videoWidth, video.videoHeight));
+        canvas.width = Math.round(video.videoWidth * scale);
+        canvas.height = Math.round(video.videoHeight * scale);
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const r = jsQR(img.data, img.width, img.height, { inversionAttempts: "dontInvert" });
+        if (r) text = r.data;
+      }
+      if (text && scanning) {
+        const id = trackIdFrom(text);
+        if (id) {
+          stopScan();
+          if (navigator.vibrate) navigator.vibrate(60);
+          playTrack(id);
+          return;
+        }
+        if (text !== lastBad) { lastBad = text; toast("Das ist kein Spotify-Song-Code."); }
+      }
+    }
+    requestAnimationFrame(tick);
+  }
+
+  // ---------- Bildschirm anlassen ----------
+  let wakeLock = null;
+  async function keepAwake() {
+    try { if ("wakeLock" in navigator && document.visibilityState === "visible") wakeLock = await navigator.wakeLock.request("screen"); } catch {}
+  }
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") keepAwake(); else if (scanning) { stopScan(); setStage("idle"); resetIdleText(); } });
+
+  function resetIdleText() {
+    $("#status").textContent = "Karte scannen";
+    $("#sub").textContent = "Tippe auf das Feld und halte die Rückseite der Karte vor die Kamera.";
+  }
+
+  // ---------- Bedienung ----------
+  $("#redirect-uri").textContent = REDIRECT_URI;
+  $("#https-warn").hidden = location.protocol === "https:" || location.hostname === "127.0.0.1";
+  $("#client-id").value = clientId();
+
+  $("#save-client").onclick = () => {
+    const v = $("#client-id").value.trim();
+    if (!/^[0-9a-f]{32}$/i.test(v)) { toast("Die Client ID besteht aus 32 Zeichen (0–9, a–f)."); return; }
+    store.set("client_id", v); store.del("token");
+    showScreen("login");
+  };
+  $("#login").onclick = () => login().catch((e) => toast(e.message));
+  $("#change-client").onclick = $("#change-client-2").onclick = () => { stopScan(); showScreen("setup"); };
+  $("#logout").onclick = () => { store.del("token"); stopScan(); clearTimers(); showScreen("login"); };
+
+  $("#device").onchange = (e) => store.set("device", e.target.value);
+  $("#reload-devices").onclick = () => loadDevices().then((l) => toast(l.length ? l.length + " Gerät(e) gefunden" : "Kein Gerät gefunden – Spotify-App öffnen")).catch((e) => toast(friendly(e)));
+
+  $("#center").onclick = () => {
+    const s = stage.dataset.state;
+    if (s === "idle" || s === "error") startScan();
+    else if (s === "play") togglePlay();
+  };
+  $("#next").onclick = () => startScan();
+  $("#cancel").onclick = () => { stopScan(); setStage("idle"); resetIdleText(); };
+  $("#retry").onclick = () => currentTrack ? playTrack(currentTrack) : startScan();
+
+  $("#opt-random").checked = store.get("random", false);
+  $("#opt-random").onchange = (e) => store.set("random", e.target.checked);
+  $("#opt-limit").value = String(store.get("limit", 0));
+  $("#opt-limit").onchange = (e) => store.set("limit", Number(e.target.value));
+
+  // ---------- Start ----------
+  (async () => {
+    setStage("idle");
+    if (!clientId()) return showScreen("setup");
+    try { await handleRedirect(); } catch (e) { toast(e.message); }
+    if (!(await accessToken())) return showScreen("login");
+    showScreen("game");
+    keepAwake();
+    loadDevices().catch((e) => toast(friendly(e)));
+  })();
+})();
+</script>
+</body>
+</html>
