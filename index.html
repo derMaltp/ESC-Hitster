@@ -188,7 +188,7 @@
   //  HIER DEINE CLIENT ID EINTRAGEN (zwischen die Anführungszeichen).
   //  Dann entfällt die Einrichtung in der App.
   // ================================================================
-  const FESTE_CLIENT_ID = "9b98205bee724bc6951df5fe230ff8b8";
+  const FESTE_CLIENT_ID = "";
 
   const REDIRECT_URI = location.origin + location.pathname;
   const SCOPES = "user-modify-playback-state user-read-playback-state";
@@ -396,7 +396,9 @@
   function diagnose() {
     const st = lastState;
     if (!st || !st.device) return "Spotify meldet: keine aktive Wiedergabe.";
-    return "Spotify meldet: " + (st.device.name || "unbekanntes Gerät") + ", " + (st.is_playing ? "spielt" : "pausiert") + ".";
+    const item = st.item || st.track;
+    const geladen = item && item.id === currentTrack ? ", Song geladen" : item ? ", anderer Song geladen" : ", kein Song geladen";
+    return "Spotify meldet: " + (st.device.name || "unbekanntes Gerät") + ", " + (st.is_playing ? "spielt" : "pausiert") + geladen + ".";
   }
 
   async function playTrack(id) {
@@ -412,12 +414,26 @@
       // Nachprüfen, ob Spotify wirklich abspielt (manche Geräte nehmen Befehle an, ohne zu spielen)
       $("#status").textContent = "Prüfe Wiedergabe …";
       const devName = ($("#device").selectedOptions[0]?.textContent || "").split(" · ")[0];
-      let st = await verifyPlayback(dev, devName);
+      const devQ = encodeURIComponent(dev);
+      let st = await verifyPlayback(dev, devName, 8);
+
+      // Methode 2: Song ist geladen, aber pausiert (typisch für Android/Samsung) -> einfach "weiter" drücken
       if (!st) {
-        // Ein zweiter Versuch – nur der Startbefehl, ohne Gerät umzuschalten (das würde pausieren)
         $("#status").textContent = "Zweiter Versuch …";
-        await api("PUT", "/me/player/play?device_id=" + encodeURIComponent(dev), { uris: ["spotify:track:" + id], position_ms: pos });
-        st = await verifyPlayback(dev, devName);
+        await api("PUT", "/me/player/play?device_id=" + devQ).catch(() => {});
+        st = await verifyPlayback(dev, devName, 5);
+      }
+      // Methode 3: über die Warteschlange starten (in Warteschlange + nächster Titel)
+      if (!st) {
+        $("#status").textContent = "Dritter Versuch …";
+        try {
+          await api("POST", "/me/player/queue?device_id=" + devQ + "&uri=" + encodeURIComponent("spotify:track:" + id));
+          await sleep(800);
+          await api("POST", "/me/player/next?device_id=" + devQ);
+          await sleep(800);
+          await api("PUT", "/me/player/play?device_id=" + devQ).catch(() => {});
+          st = await verifyPlayback(dev, devName, 8);
+        } catch (e) { if (!isRestriction(e)) console.warn(e); }
       }
       if (!st) {
         setStage("error");
